@@ -1,13 +1,13 @@
-const shadowsocks = require('shadowsocks');
+const shadowsocks = require('shadowsocks-node');
 
 // ========== НАСТРОЙКИ ==========
 const PORT = process.env.PORT || 10000;
 const PASSWORD = process.env.PASSWORD || 'my-secret-password-123';
-const METHOD = 'aes-256-gcm';  // Самый быстрый и безопасный
+const METHOD = 'aes-256-gcm';
 
 // ========== СОЗДАЁМ СЕРВЕР ==========
 const config = {
-  server: '0.0.0.0',      // Слушаем все интерфейсы
+  server: '0.0.0.0',
   port: PORT,
   password: PASSWORD,
   method: METHOD,
@@ -25,5 +25,4 @@ server.listen(() => {
   console.log(`✅ Shadowsocks запущен на порту ${PORT}`);
   console.log(`🔐 Метод: ${METHOD}`);
   console.log(`🔑 Пароль: ${PASSWORD}`);
-  console.log(`🌐 Адрес: https://testsocks5.onrender.com`);
 });
