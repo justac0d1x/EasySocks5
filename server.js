@@ -1,29 +1,27 @@
-const { SocksServer } = require('socks5-server');
+const Socks5 = require('socks5');
 
 const port = process.env.PORT || 1080;
-
-// Настройка аутентификации
 const username = process.env.SOCKS5_USERNAME;
 const password = process.env.SOCKS5_PASSWORD;
 
-const server = new SocksServer({
-    port: port,
-    auth: (username, password, callback) => {
-        // Проверяем логин и пароль из переменных окружения
-        if (username === process.env.SOCKS5_USERNAME && 
-            password === process.env.SOCKS5_PASSWORD) {
-            callback(true);
-        } else {
-            callback(false);
+// Создаем SOCKS5 сервер
+const server = Socks5.createServer({
+    auth: (info, callback) => {
+        // Если аутентификация не задана - пускаем всех
+        if (!username || !password) {
+            return callback(true);
         }
+        // Иначе проверяем логин и пароль
+        callback(info.username === username && info.password === password);
     }
 });
 
-server.listen(() => {
+server.listen(port, '0.0.0.0', () => {
     console.log(`SOCKS5 proxy running on port ${port}`);
-    if (username && password) {
-        console.log('Authentication enabled');
-    } else {
-        console.log('Authentication disabled');
-    }
+    console.log(`Authentication: ${username && password ? 'Enabled' : 'Disabled'}`);
+});
+
+// Обработка ошибок
+server.on('error', (err) => {
+    console.error('Proxy error:', err);
 });
