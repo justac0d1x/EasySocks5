@@ -1,12 +1,12 @@
 {
   "name": "socks5-proxy",
   "version": "1.0.0",
-  "description": "SOCKS5 proxy server for Render",
+  "description": "Простой SOCKS5 прокси с мониторингом",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "socks5": "0.0.1"
+    "socksv5": "^0.0.6"
   }
 }
