@@ -7,6 +7,6 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "shadowsocks": "^1.9.0"
+    "shadowsocks-node": "^1.0.0"
   }
 }
