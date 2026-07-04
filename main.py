@@ -7,12 +7,12 @@ import sys
 import signal
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Глобальная переменная для времени запуска
 start_time = time.time()
 
-def handle_http_request(client_socket):
+def handle_http_client(client_socket, addr):
     """Обработка HTTP запросов для health check"""
     try:
         # Получаем запрос
@@ -22,7 +22,7 @@ def handle_http_request(client_socket):
         if 'GET /' in request or 'HEAD /' in request:
             # Формируем JSON ответ
             uptime_seconds = int(time.time() - start_time)
-            uptime_str = str(datetime.timedelta(seconds=uptime_seconds))
+            uptime_str = str(timedelta(seconds=uptime_seconds))
             
             response_data = {
                 "status": "ok",
@@ -31,7 +31,8 @@ def handle_http_request(client_socket):
                 "uptime_human": uptime_str,
                 "timestamp": datetime.now().isoformat(),
                 "version": "1.0",
-                "port": 8443
+                "socks5_port": 1080,
+                "http_port": 8443
             }
             
             response_json = json.dumps(response_data, indent=2)
@@ -59,41 +60,19 @@ def handle_http_request(client_socket):
             client_socket.send(response.encode())
             
     except Exception as e:
-        print(f"[-] HTTP ошибка: {e}")
+        print(f"[-] HTTP ошибка от {addr}: {e}")
     finally:
         try:
             client_socket.close()
         except:
             pass
 
-def handle_client(client_socket):
+def handle_socks5_client(client_socket, addr):
+    """Обработка SOCKS5 клиентов"""
     try:
-        # Проверяем первый байт для определения протокола
-        # SOCKS5 начинается с 0x05, HTTP начинается с 'G', 'P', 'H' и т.д.
-        first_byte = client_socket.recv(1)
-        if not first_byte:
-            client_socket.close()
-            return
-        
-        # Если это HTTP запрос (начинается с буквы)
-        if first_byte in [b'G', b'P', b'H', b'C', b'O']:
-            # Получаем остаток запроса
-            remaining = client_socket.recv(1024)
-            full_request = first_byte + remaining
-            client_socket = client_socket  # Используем тот же сокет
-            # Создаем новый сокет для HTTP обработки
-            # Простой способ: пересоздаем объект
-            http_sock = client_socket
-            # Добавляем запрос обратно в буфер через новый сокет
-            # Используем обертку для чтения полного запроса
-            handle_http_request(client_socket)
-            return
-        
-        # Иначе это SOCKS5
-        data = first_byte + client_socket.recv(261)  # Получаем остаток приветствия
-        
-        # Проверяем SOCKS5 приветствие
-        if len(data) < 2 or data[0] != 0x05:
+        # 1. Приветствие SOCKS5
+        data = client_socket.recv(262)
+        if not data or data[0] != 0x05:
             client_socket.close()
             return
         
@@ -115,17 +94,37 @@ def handle_client(client_socket):
         
         # Парсим адрес назначения
         if atyp == 0x01:  # IPv4
-            addr = socket.inet_ntoa(client_socket.recv(4))
-            port = struct.unpack('!H', client_socket.recv(2))[0]
+            addr_bytes = client_socket.recv(4)
+            if len(addr_bytes) < 4:
+                client_socket.close()
+                return
+            addr = socket.inet_ntoa(addr_bytes)
+            port_bytes = client_socket.recv(2)
+            if len(port_bytes) < 2:
+                client_socket.close()
+                return
+            port = struct.unpack('!H', port_bytes)[0]
         elif atyp == 0x03:  # Доменное имя
-            addr_len = client_socket.recv(1)[0]
-            addr = client_socket.recv(addr_len).decode()
-            port = struct.unpack('!H', client_socket.recv(2))[0]
+            addr_len_byte = client_socket.recv(1)
+            if not addr_len_byte:
+                client_socket.close()
+                return
+            addr_len = addr_len_byte[0]
+            addr_bytes = client_socket.recv(addr_len)
+            if len(addr_bytes) < addr_len:
+                client_socket.close()
+                return
+            addr = addr_bytes.decode()
+            port_bytes = client_socket.recv(2)
+            if len(port_bytes) < 2:
+                client_socket.close()
+                return
+            port = struct.unpack('!H', port_bytes)[0]
         else:
             client_socket.close()
             return
         
-        print(f"[+] Подключение к {addr}:{port}")
+        print(f"[+] SOCKS5: {addr[0]}:{port}")
         
         # 3. Устанавливаем соединение с целевым сервером
         try:
@@ -154,7 +153,7 @@ def handle_client(client_socket):
                     if not data:
                         break
                     dest.send(data)
-            except Exception as e:
+            except:
                 pass
             finally:
                 try:
@@ -179,45 +178,71 @@ def handle_client(client_socket):
         t2.join()
         
     except Exception as e:
-        print(f"[-] Ошибка: {e}")
+        print(f"[-] SOCKS5 ошибка от {addr}: {e}")
     finally:
         try:
             client_socket.close()
         except:
             pass
 
-def start_server(host='0.0.0.0', port=8443):
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.settimeout(60)
-    server.bind((host, port))
-    server.listen(100)
+def start_http_server(host='0.0.0.0', port=8443):
+    """HTTP сервер для health check"""
+    http_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    http_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    http_server.bind((host, port))
+    http_server.listen(10)
     
-    print(f"[+] SOCKS5 сервер запущен на {host}:{port}")
-    print(f"[+] Health check: http://{host}:{port}/")
-    print("[+] Ожидание подключений...")
-    
-    # Обработка сигналов для graceful shutdown
-    def signal_handler(sig, frame):
-        print("\n[!] Получен сигнал завершения. Останавливаем сервер...")
-        server.close()
-        sys.exit(0)
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    print(f"[+] HTTP Health Check запущен на {host}:{port}")
     
     while True:
         try:
-            client, addr = server.accept()
-            print(f"[+] Новое подключение от {addr}")
-            thread = threading.Thread(target=handle_client, args=(client,))
+            client, addr = http_server.accept()
+            print(f"[+] HTTP запрос от {addr}")
+            thread = threading.Thread(target=handle_http_client, args=(client, addr))
             thread.daemon = True
             thread.start()
-        except socket.timeout:
-            continue
         except Exception as e:
-            print(f"[-] Ошибка принятия соединения: {e}")
-            continue
+            print(f"[-] HTTP ошибка: {e}")
+
+def start_socks5_server(host='0.0.0.0', port=1080):
+    """SOCKS5 сервер"""
+    socks5_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    socks5_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    socks5_server.bind((host, port))
+    socks5_server.listen(100)
+    
+    print(f"[+] SOCKS5 сервер запущен на {host}:{port}")
+    
+    while True:
+        try:
+            client, addr = socks5_server.accept()
+            print(f"[+] SOCKS5 подключение от {addr}")
+            thread = threading.Thread(target=handle_socks5_client, args=(client, addr))
+            thread.daemon = True
+            thread.start()
+        except Exception as e:
+            print(f"[-] SOCKS5 ошибка: {e}")
+
+def main():
+    # Получаем порты из переменных окружения или используем значения по умолчанию
+    http_port = int(os.environ.get('HTTP_PORT', 8443))
+    socks5_port = int(os.environ.get('SOCKS5_PORT', 1080))
+    
+    print("=" * 50)
+    print("SOCKS5 Proxy Server with HTTP Health Check")
+    print("=" * 50)
+    print(f"[+] HTTP Health Check порт: {http_port}")
+    print(f"[+] SOCKS5 прокси порт: {socks5_port}")
+    print(f"[+] Health Check URL: http://0.0.0.0:{http_port}/")
+    print("=" * 50)
+    
+    # Запускаем HTTP сервер в отдельном потоке
+    http_thread = threading.Thread(target=start_http_server, args=('0.0.0.0', http_port))
+    http_thread.daemon = True
+    http_thread.start()
+    
+    # Запускаем SOCKS5 сервер в основном потоке
+    start_socks5_server('0.0.0.0', socks5_port)
 
 if __name__ == "__main__":
-    start_server()
+    main()
