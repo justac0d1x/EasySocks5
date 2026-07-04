@@ -5,12 +5,95 @@ import select
 import os
 import sys
 import signal
+import json
+import time
+from datetime import datetime
+
+# Глобальная переменная для времени запуска
+start_time = time.time()
+
+def handle_http_request(client_socket):
+    """Обработка HTTP запросов для health check"""
+    try:
+        # Получаем запрос
+        request = client_socket.recv(1024).decode('utf-8', errors='ignore')
+        
+        # Проверяем путь
+        if 'GET /' in request or 'HEAD /' in request:
+            # Формируем JSON ответ
+            uptime_seconds = int(time.time() - start_time)
+            uptime_str = str(datetime.timedelta(seconds=uptime_seconds))
+            
+            response_data = {
+                "status": "ok",
+                "service": "SOCKS5 Proxy",
+                "uptime_seconds": uptime_seconds,
+                "uptime_human": uptime_str,
+                "timestamp": datetime.now().isoformat(),
+                "version": "1.0",
+                "port": 8443
+            }
+            
+            response_json = json.dumps(response_data, indent=2)
+            
+            response = (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: application/json\r\n"
+                f"Content-Length: {len(response_json)}\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                f"{response_json}"
+            )
+            
+            client_socket.send(response.encode())
+        else:
+            # 404 для других запросов
+            response = (
+                "HTTP/1.1 404 Not Found\r\n"
+                "Content-Type: text/plain\r\n"
+                "Content-Length: 9\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "Not Found"
+            )
+            client_socket.send(response.encode())
+            
+    except Exception as e:
+        print(f"[-] HTTP ошибка: {e}")
+    finally:
+        try:
+            client_socket.close()
+        except:
+            pass
 
 def handle_client(client_socket):
     try:
-        # 1. Приветствие SOCKS5
-        data = client_socket.recv(262)
-        if not data or data[0] != 0x05:
+        # Проверяем первый байт для определения протокола
+        # SOCKS5 начинается с 0x05, HTTP начинается с 'G', 'P', 'H' и т.д.
+        first_byte = client_socket.recv(1)
+        if not first_byte:
+            client_socket.close()
+            return
+        
+        # Если это HTTP запрос (начинается с буквы)
+        if first_byte in [b'G', b'P', b'H', b'C', b'O']:
+            # Получаем остаток запроса
+            remaining = client_socket.recv(1024)
+            full_request = first_byte + remaining
+            client_socket = client_socket  # Используем тот же сокет
+            # Создаем новый сокет для HTTP обработки
+            # Простой способ: пересоздаем объект
+            http_sock = client_socket
+            # Добавляем запрос обратно в буфер через новый сокет
+            # Используем обертку для чтения полного запроса
+            handle_http_request(client_socket)
+            return
+        
+        # Иначе это SOCKS5
+        data = first_byte + client_socket.recv(261)  # Получаем остаток приветствия
+        
+        # Проверяем SOCKS5 приветствие
+        if len(data) < 2 or data[0] != 0x05:
             client_socket.close()
             return
         
@@ -60,11 +143,10 @@ def handle_client(client_socket):
         reply += struct.pack('!H', 0)
         client_socket.send(reply)
         
-        # 4. Проксируем трафик (улучшенная версия)
+        # 4. Проксируем трафик
         def forward_data(source, dest):
             try:
                 while True:
-                    # Используем select для неблокирующей передачи
                     rlist, _, _ = select.select([source], [], [], 5)
                     if not rlist:
                         continue
@@ -112,6 +194,7 @@ def start_server(host='0.0.0.0', port=8443):
     server.listen(100)
     
     print(f"[+] SOCKS5 сервер запущен на {host}:{port}")
+    print(f"[+] Health check: http://{host}:{port}/")
     print("[+] Ожидание подключений...")
     
     # Обработка сигналов для graceful shutdown
